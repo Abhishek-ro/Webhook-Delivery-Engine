@@ -1,0 +1,152 @@
+# docker-compose.loadtest.yml
+#
+# Compose override for load testing.  Merge with the base compose file:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.loadtest.yml up -d
+#
+# Or via Makefile:
+#   make loadtest-up
+#
+# Changes from the base file:
+#   - CPU quotas pin each service to a fixed share so results are reproducible
+#     across machines and CI runners.
+#   - pgBouncer pool size and worker concurrency are raised for realistic load.
+#   - Postgres work_mem / shared_buffers tuned via POSTGRES_INITDB_ARGS.
+#   - A dedicated k6 service is included so the test runner shares the same
+#     Docker network as the API (avoids NAT overhead in latency numbers).
+#
+# CPU pinning reference:
+#   cpus: '2.0'  means "up to 2 CPU cores worth of time" (not core affinity)
+#   This is the standard Docker / cgroups v2 way to set a CPU quota.
+
+services:
+
+  postgres:
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1g
+    command: >
+      postgres
+        -c shared_buffers=256MB
+        -c work_mem=8MB
+        -c max_connections=500
+        -c synchronous_commit=off
+
+  pgbouncer:
+    environment:
+      DEFAULT_POOL_SIZE: '200'
+      MAX_CLIENT_CONN: '2000'
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128m
+
+  redis:
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512m
+
+  # Thin nginx reverse proxy — exposes port 3000 on the host so you can
+  # register endpoints and healthcheck from the terminal even when api is
+  # scaled to N replicas (which can't all bind the same host port).
+  # k6 hits api:3000 directly; Docker's internal DNS round-robins between replicas.
+  api-lb:
+    image: nginx:alpine
+    ports:
+      - "3000:80"
+    volumes:
+      - ./loadtest/nginx-lb.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - api
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 64m
+
+  api:
+    # Clear the host port binding so both replicas can start without
+    # fighting over port 3000.  Host access goes through api-lb above.
+    ports: !reset []
+    environment:
+      # Keep development so the HTTPS-only endpoint check doesn't block
+      # http://test-receiver URLs.  All production-like behaviours
+      # (concurrency, lock timings, etc.) are set via explicit env vars.
+      NODE_ENV: development
+      # Raise body limit for burst payloads if needed
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1g
+
+  worker:
+    environment:
+      WORKER_CONCURRENCY: '100'
+      # Production-safe lock timings for sustained load
+      BULLMQ_LOCK_DURATION_MS: '30000'
+      BULLMQ_STALLED_INTERVAL_MS: '15000'
+      LOCK_TTL_MS: '25000'
+      LOCK_HEARTBEAT_INTERVAL_MS: '5000'
+      NODE_ENV: production
+    deploy:
+      replicas: 4
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 512m
+
+  reconciler:
+    environment:
+      NODE_ENV: production
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256m
+
+  test-receiver:
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 256m
+
+  # ---------------------------------------------------------------------------
+  # k6 load test runner
+  # ---------------------------------------------------------------------------
+  # Runs inside the Docker network so it hits the API directly (no host NAT).
+  # Triggered by `make loadtest-baseline` — not started by `make up`.
+  #
+  # Volumes:
+  #   - ./loadtest:/loadtest   — mounts test scripts read-only
+  #   - ./loadtest:/results    — k6 writes result.json here
+  k6:
+    image: grafana/k6:latest
+    profiles:
+      - loadtest          # only starts when --profile loadtest is passed
+    networks:
+      - default
+    volumes:
+      - ./loadtest:/loadtest:ro
+      - ./loadtest:/results
+    environment:
+      BASE_URL:    http://api:3000
+      ENDPOINT_ID: ${ENDPOINT_ID:-}
+      CLIENT_ID:   loadtest
+    depends_on:
+      - api
+    # The actual k6 command is provided by `make loadtest-baseline` via
+    # `docker compose run k6 run --out json=/results/result.json /loadtest/baseline.js`
+    # so no default `command:` is set here.
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2g

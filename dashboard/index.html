@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Webhook Delivery Engine</title>
+    <style>
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+      :root {
+        --bg: #0d1117; --bg2: #161b22; --bg3: #21262d;
+        --border: #30363d; --border2: #3d444d;
+        --text: #e6edf3; --text2: #7d8590; --text3: #484f58;
+        --pending: #e3b341; --delivering: #388bfd; --delivered: #3fb950;
+        --failed: #f85149; --dlq: #a371f7;
+        --accent: #388bfd;
+        --font: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+      }
+      html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 13px; }
+      #root { height: 100%; display: flex; flex-direction: column; }
+      button { font-family: var(--font); font-size: 12px; cursor: pointer; border: 1px solid var(--border); background: var(--bg3); color: var(--text); padding: 3px 10px; border-radius: 4px; }
+      button:hover { background: var(--border); }
+      button:disabled { opacity: 0.4; cursor: default; }
+      input, select { font-family: var(--font); font-size: 12px; background: var(--bg2); color: var(--text); border: 1px solid var(--border); padding: 3px 6px; border-radius: 4px; }
+      select option { background: var(--bg2); }
+      table { border-collapse: collapse; width: 100%; }
+      th { text-align: left; color: var(--text2); font-weight: normal; padding: 4px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+      td { padding: 3px 8px; border-bottom: 1px solid var(--bg3); white-space: nowrap; overflow: hidden; max-width: 200px; text-overflow: ellipsis; }
+      tr:hover td { background: var(--bg2); }
+      .status-PENDING    { color: var(--pending); }
+      .status-DELIVERING { color: var(--delivering); }
+      .status-DELIVERED  { color: var(--delivered); }
+      .status-FAILED     { color: var(--failed); }
+      .status-DLQ        { color: var(--dlq); }
+      .outcome-SUCCESS     { color: var(--delivered); }
+      .outcome-HTTP_ERROR  { color: var(--failed); }
+      .outcome-TIMEOUT     { color: var(--failed); }
+      .outcome-CONN_ERROR  { color: var(--failed); }
+      .outcome-CIRCUIT_OPEN{ color: var(--pending); }
+      .outcome-LOCK_LOST   { color: var(--text2); }
+      a { color: var(--accent); text-decoration: none; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

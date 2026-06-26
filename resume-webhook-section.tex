@@ -1,0 +1,54 @@
+% ─────────────────────────────────────────────────────────────────────────────
+% Resume section — Distributed Webhook Delivery Engine
+% Numbers from load test run 2026-06-26
+% Drop this \resumeProjectHeading block into your Projects section.
+% ─────────────────────────────────────────────────────────────────────────────
+
+\resumeProjectHeading
+  {\textbf{Distributed Webhook Delivery Engine} $|$
+   \emph{Node.js, TypeScript, BullMQ, Redis, PostgreSQL, pgBouncer, k6} $|$
+   \href{https://github.com/YOUR_REPO}{\underline{GitHub}}}{Mar 2025 – Jun 2025}
+  \resumeItemListStart
+
+    \resumeItem{Built a distributed webhook delivery engine with at-least-once delivery
+      guarantee using Redis Lua-scripted distributed locking (\texttt{SETNX} + heartbeat
+      renewal every 20 s) and two-layer idempotency (Redis fast-path + Postgres
+      \texttt{ON CONFLICT}), preventing duplicate deliveries across 4 concurrent worker
+      replicas.}
+
+    \resumeItem{Implemented jittered exponential backoff (10 s $\to$ 30 s $\to$ 2 min
+      $\to$ 10 min $\to$ 1 h, 5 attempts) with a dead-letter queue and manual retry API
+      (\texttt{POST /v1/dlq/:id/retry}), mitigating thundering-herd effects; validated
+      retry math via SQL invariant checks after every chaos run.}
+
+    \resumeItem{Designed an outbox reconciler pattern — event and delivery rows inserted
+      atomically with \texttt{enqueued=false}; a 30 s sweep re-enqueues anything that
+      slipped through a crash between persist and enqueue, closing the gap without
+      Debezium or Kafka.}
+
+    \resumeItem{Deployed pgBouncer in transaction-mode connection pooling; eliminated all
+      session-state dependencies (advisory locks, \texttt{SET} commands) and moved all
+      cross-request synchronisation to Redis Lua scripts, enabling a 200-connection pool
+      to serve 2,000 concurrent VUs.}
+
+    \resumeItem{Built per-endpoint circuit breaker (closed $\to$ open $\to$ half-open
+      probe) and token-bucket rate limiter in Redis Lua, fast-failing deliveries to
+      degraded endpoints and preventing a single slow downstream from saturating the
+      worker pool.}
+
+    \resumeItem{Designed append-only audit trail capturing attempt timestamps, HTTP
+      status codes, response payloads, and full status transition chain
+      (\texttt{PENDING $\to$ DELIVERING $\to$ DELIVERED}) per delivery; keyset-paginated
+      delivery list API handles concurrent inserts without cursor corruption.}
+
+    \resumeItem{Authored chaos test suite (Dockerode fault injection) covering Redis
+      flush, mid-flight worker kill, and lock expiry during HTTP delivery; validated
+      correctness via SQL audit invariants across 10 consecutive runs — zero failures.}
+
+    \resumeItem{Load-tested to 2,000 VUs with k6; achieved \textbf{zero event loss}
+      across 66,485 delivered webhooks with end-to-end delivery lag p50 = 373 ms and
+      p95 = 1.49 s; backpressure mechanism (429 at 50 k queue depth) correctly shed
+      70\% of excess traffic at the API edge; identified pgBouncer connection pool
+      contention as saturation bottleneck via delivery lag SQL analysis.}
+
+  \resumeItemListEnd

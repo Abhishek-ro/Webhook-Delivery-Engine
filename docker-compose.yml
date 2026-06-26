@@ -1,0 +1,145 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: webhooks
+      POSTGRES_USER: webhooks
+      POSTGRES_PASSWORD: webhooks
+    ports:
+      - '5433:5432'
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U webhooks']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    environment:
+      DB_USER: webhooks
+      DB_PASSWORD: webhooks
+      DB_HOST: postgres
+      DB_NAME: webhooks
+      POOL_MODE: transaction
+      DEFAULT_POOL_SIZE: '20'
+      MAX_CLIENT_CONN: '200'
+      SERVER_IDLE_TIMEOUT: '60'
+      AUTH_TYPE: scram-sha-256
+    ports:
+      - '5432:5432'
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: npx tsx src/api/index.ts
+    environment:
+      DATABASE_URL: postgres://webhooks:webhooks@pgbouncer:5432/webhooks
+      REDIS_URL: redis://redis:6379
+      PORT: '3000'
+      NODE_ENV: development
+      SERVICE_NAME: api
+    ports:
+      - '3000:3000'
+    volumes:
+      - .:/app
+      - /app/node_modules
+    depends_on:
+      pgbouncer:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    restart: on-failure
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: npx tsx src/worker/index.ts
+    environment:
+      DATABASE_URL: postgres://webhooks:webhooks@pgbouncer:5432/webhooks
+      REDIS_URL: redis://redis:6379
+      WORKER_CONCURRENCY: '50'
+      NODE_ENV: development
+      SERVICE_NAME: worker
+      # Tuned for fast stall recovery in the worker-kill integration test.
+      # Invariant that must hold: BULLMQ_LOCK_DURATION_MS/2 + BULLMQ_STALLED_INTERVAL_MS > LOCK_TTL_MS
+      # (i.e. 7.5 + 5 = 12.5 > 10) — guarantees the custom Redis lock has
+      # expired before BullMQ re-queues the stalled job, so acquire() succeeds.
+      # Production deployments should override these back to higher values.
+      BULLMQ_LOCK_DURATION_MS: '15000'
+      BULLMQ_STALLED_INTERVAL_MS: '5000'
+      LOCK_TTL_MS: '10000'
+      LOCK_HEARTBEAT_INTERVAL_MS: '2000'
+    volumes:
+      - .:/app
+      - /app/node_modules
+    deploy:
+      replicas: 2
+    depends_on:
+      pgbouncer:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    restart: on-failure
+
+  reconciler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: npx tsx src/reconciler/index.ts
+    environment:
+      DATABASE_URL: postgres://webhooks:webhooks@pgbouncer:5432/webhooks
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: development
+      SERVICE_NAME: reconciler
+    volumes:
+      - .:/app
+      - /app/node_modules
+    depends_on:
+      pgbouncer:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    restart: on-failure
+
+  test-receiver:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: npx tsx src/test-receiver/index.ts
+    environment:
+      PORT: '4000'
+    ports:
+      - '4000:4000'
+    volumes:
+      - .:/app
+      - /app/node_modules
+
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    ports:
+      - '8080:80'
+    depends_on:
+      - api
+
+volumes:
+  pg_data:

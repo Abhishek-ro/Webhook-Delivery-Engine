@@ -1,0 +1,139 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # 03:17 UTC daily — chaos-loop is slow (10 consecutive full chaos runs,
+    # one of which alone waits out a 2-minute container freeze) and has no
+    # business gating every push/PR. This is the Week 2 exit gate ("chaos
+    # suite passes 10 consecutive runs") run on a cadence, not on demand.
+    - cron: '17 3 * * *'
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  lint-typecheck-unit:
+    name: Lint, typecheck, unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Unit tests
+        run: pnpm test:unit
+
+  integration:
+    # Some test/integration/*.test.ts files (happy/retry/duplicate) talk to
+    # the real API + worker + test-receiver over HTTP, and worker-kill.test.ts
+    # calls `docker compose ps`/`docker kill` directly — none of that exists
+    # with GitHub's lightweight "services:" containers, so this job brings up
+    # the project's actual docker-compose.yml instead, the same way a human
+    # would for `make demo`.
+    name: Integration tests (full stack)
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgres://webhooks:webhooks@localhost:5432/webhooks
+      REDIS_URL: redis://localhost:6379
+      API_BASE_URL: http://localhost:3000
+      RECEIVER_BASE_URL: http://localhost:4000
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Start full stack
+        run: docker compose up -d --build postgres pgbouncer redis api worker reconciler test-receiver
+
+      - name: Wait for API readiness
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:3000/readyz && exit 0
+            sleep 2
+          done
+          echo "API never became ready"
+          docker compose logs
+          exit 1
+
+      - name: Run migrations
+        run: pnpm migrate
+
+      - name: Explain check (no seq scans on hot paths)
+        run: npx tsx scripts/explain-check.ts
+        env:
+          PGBOUNCER_URL: postgres://webhooks:webhooks@localhost:5432/webhooks
+
+      - name: Integration tests
+        run: pnpm test:int
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
+
+  chaos-nightly:
+    # Only on the schedule trigger — not on every push/PR. `make chaos-loop`
+    # boots the stack itself (same as the integration job above), so this
+    # job doesn't duplicate that setup as separate steps.
+    if: github.event_name == 'schedule'
+    name: Chaos suite (10 consecutive runs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Chaos loop (10x, stop on first red)
+        run: make chaos-loop
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
